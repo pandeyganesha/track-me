@@ -81,6 +81,12 @@ Two processes might need to talk to each other, like we need to talk with hyprla
 
 So, `.socket2.sock` is a live event stream (not some log file) emitted by the Hyprland compositor over a UNIX domain socket to connected clients, containing real-time compositor events, without history or persistence.
 
+## Diagram for Event Broadcasting for Hyprland
+
+I recently stumbled on this nice diagram which might help understanding things better
+
+![Event Broadcasting in Hyprland](./assets/event_broadcasting_hyprland.png)
+
 ## Conclusion
 
 We will listen to this socket for any events and then would track active windows.
