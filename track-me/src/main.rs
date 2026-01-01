@@ -1,7 +1,5 @@
-use core::time;
 use std::collections::HashMap;
 use std::env;
-use std::f32::INFINITY;
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -28,7 +26,7 @@ fn main() -> std::io::Result<()> {
     let stream = UnixStream::connect(socket_path)?;
     let reader = BufReader::new(stream);
 
-    let re = Regex::new(r"^activewindow>>([^,]+),(.+)$").unwrap();
+    let re = Regex::new(r"^activewindow>>([^,]*),(.*)$").unwrap();
     let mut curr_active_win = UNKNOWN_STATE.to_string();
     let mut start = Instant::now();
     
@@ -50,6 +48,9 @@ fn main() -> std::io::Result<()> {
             .or_insert(elapsed);
             println!("{:?}", time_spent);
             curr_active_win = caps[1].to_string();
+            if curr_active_win.is_empty() {
+                curr_active_win = "desktop".to_string();
+            }
             // let context = caps[2].to_string();
 
         }
