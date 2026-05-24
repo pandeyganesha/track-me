@@ -1,0 +1,23 @@
+[Unit]
+Description=track-me activity tracker engine
+Documentation=https://github.com/pandeyganesha/track-me
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/track-me
+Restart=on-failure
+RestartSec=5
+
+# Logging goes to journald by default
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=track-me
+
+# Ensure Hyprland env vars are available
+# (systemd user services inherit the graphical session environment
+#  when started after graphical-session.target)
+
+[Install]
+WantedBy=graphical-session.target

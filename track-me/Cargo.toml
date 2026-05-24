@@ -1,7 +1,33 @@
 [package]
 name = "track-me"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+description = "A local, privacy-first system activity tracker for Linux"
+license = "MIT"
 
 [dependencies]
-regex = "1.12.2"
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Database
+rusqlite = { version = "0.34", features = ["bundled"] }
+
+# XDG directory resolution
+dirs = "6"
+
+# Configuration
+toml = "0.8"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Signal handling
+ctrlc = "3"
+
+# Error handling
+anyhow = "1"

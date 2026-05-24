@@ -1,156 +1,163 @@
-use std::collections::HashMap;
-use std::env;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+// track-me: Core engine entry point
+//
+// Orchestrates the event pipeline:
+//   Provider (compositor events)  ─┐
+//   Idle detector (timeout events) ─┼──▶  Tracker  ──▶  Store (JSONL + SQLite)
+//   IPC server (query interface)   ─┘
+//
+// All threads coordinate through a shared shutdown flag (AtomicBool)
+// and communicate via mpsc channels.
+
+mod config;
+mod event;
+mod idle;
+mod ipc;
+mod provider;
+mod store;
+mod tracker;
+
+use crate::event::Event;
+use crate::idle::IdleState;
+use crate::ipc::CurrentState;
+use anyhow::{Context, Result};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Instant;
-use regex::Regex;
+use std::time::{Duration, Instant};
 
-const UNKNOWN_STATE: &str = "Unknown";
-const BROADCAST_SOCKET: &str = "/tmp/hyprland_time_tracker.sock";
+fn main() -> Result<()> {
+    // Initialize logging (respects RUST_LOG env var, defaults to "info")
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info"),
+    )
+    .format_timestamp_secs()
+    .init();
 
-type TimeSpent = Arc<Mutex<HashMap<String, i32>>>;
+    log::info!("track-me engine starting");
 
-fn main() -> std::io::Result<()> {
-    let time_spent: TimeSpent = Arc::new(Mutex::new(HashMap::from([
-        (UNKNOWN_STATE.to_string(), 0)
-    ])));
+    // --- Load configuration ---
+    let config = config::Config::load()
+        .context("Failed to load configuration")?;
+    log::info!("Provider: {}", config.general.provider);
 
-    // Start the broadcast server in a separate thread
-    let time_spent_clone = Arc::clone(&time_spent);
-    thread::spawn(move || {
-        if let Err(e) = start_broadcast_server(time_spent_clone) {
-            eprintln!("Broadcast server error: {}", e);
-        }
-    });
+    // --- Initialize storage ---
+    let store = store::Store::new(&config)
+        .context("Failed to initialize storage")?;
 
-    // Connect to Hyprland socket and track window time
-    track_window_time(time_spent)?;
+    // --- Detect compositor provider ---
+    let event_provider = provider::detect_provider(&config)
+        .context("Failed to initialize event provider")?;
+    log::info!("Provider ready: {}", event_provider.name());
 
-    Ok(())
-}
+    // --- Shared state ---
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shared_state = Arc::new(Mutex::new(CurrentState::new()));
+    let idle_state = Arc::new(Mutex::new(IdleState::new()));
 
-/// Connects to Hyprland's event socket and tracks time spent in each window
-fn track_window_time(time_spent: TimeSpent) -> std::io::Result<()> {
-    let socket_path = get_hyprland_socket_path()?;
-    println!("Connecting to socket: {:?}", socket_path);
+    // --- Signal handler (SIGINT / SIGTERM) ---
+    let shutdown_signal = Arc::clone(&shutdown);
+    ctrlc::set_handler(move || {
+        log::info!("Shutdown signal received (SIGINT/SIGTERM)");
+        shutdown_signal.store(true, Ordering::SeqCst);
+    })
+    .context("Failed to set signal handler")?;
 
-    let stream = UnixStream::connect(socket_path)?;
-    let reader = BufReader::new(stream);
-    let re = Regex::new(r"^activewindow>>([^,]*),(.*)$").unwrap();
+    // --- Event channel ---
+    let (tx, rx) = mpsc::channel::<Event>();
 
-    let mut curr_active_win = UNKNOWN_STATE.to_string();
-    let mut start = Instant::now();
+    // --- Spawn provider thread ---
+    let provider_tx = tx.clone();
+    let provider_shutdown = Arc::clone(&shutdown);
+    let provider_thread = thread::Builder::new()
+        .name("provider".into())
+        .spawn(move || {
+            if let Err(e) = event_provider.run(provider_tx, provider_shutdown) {
+                log::error!("Provider thread error: {}", e);
+            }
+        })
+        .context("Failed to spawn provider thread")?;
 
-    for line in reader.lines() {
-        let line = line?;
-        println!("{}", line);
+    // --- Spawn idle detector thread ---
+    let idle_tx = tx.clone();
+    let idle_shutdown = Arc::clone(&shutdown);
+    let idle_config = config.idle.clone();
+    let idle_state_clone = Arc::clone(&idle_state);
+    let idle_thread = thread::Builder::new()
+        .name("idle-detector".into())
+        .spawn(move || {
+            idle::run(idle_tx, idle_shutdown, idle_config, idle_state_clone);
+        })
+        .context("Failed to spawn idle detector thread")?;
 
-        if let Some(caps) = re.captures(&line) {
-            let elapsed = start.elapsed().as_millis() as i32;
-            start = Instant::now();
+    // --- Spawn IPC server thread ---
+    let ipc_state = Arc::clone(&shared_state);
+    let ipc_shutdown = Arc::clone(&shutdown);
+    let ipc_config = config.clone();
+    let ipc_thread = thread::Builder::new()
+        .name("ipc-server".into())
+        .spawn(move || {
+            if let Err(e) = ipc::run(&ipc_config, ipc_state, ipc_shutdown) {
+                log::error!("IPC server error: {}", e);
+            }
+        })
+        .context("Failed to spawn IPC server thread")?;
 
-            // Update time spent for the previous window
-            update_time_spent(&time_spent, &curr_active_win, elapsed);
+    // Drop the sender clone so the channel closes when all producers exit
+    drop(tx);
 
-            // Get new active window
-            curr_active_win = caps[1].to_string();
-            if curr_active_win.is_empty() {
-                curr_active_win = "desktop".to_string();
+    // --- Main loop: tracker ---
+    let mut tracker_engine = tracker::Tracker::new(store, shared_state);
+    tracker_engine.start()?;
+
+    // Track whether we're currently idle for the IdleEnd injection logic
+    let mut currently_idle = false;
+
+    loop {
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(event) => {
+                // Update the last-event timestamp for idle detection
+                if let Ok(mut state) = idle_state.lock() {
+                    state.last_event_time = Instant::now();
+                }
+
+                // If we receive a real compositor event while idle,
+                // inject an IdleEnd before processing the event
+                let is_idle_event = matches!(event, Event::IdleStart | Event::IdleEnd);
+                if currently_idle && !is_idle_event {
+                    tracker_engine.handle_event(Event::IdleEnd)?;
+                    currently_idle = false;
+                }
+
+                // Track idle state
+                match &event {
+                    Event::IdleStart => currently_idle = true,
+                    Event::IdleEnd => currently_idle = false,
+                    _ => {}
+                }
+
+                tracker_engine.handle_event(event)?;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                log::warn!("All event producers disconnected");
+                break;
             }
         }
     }
 
+    // --- Clean shutdown ---
+    log::info!("Shutting down...");
+    tracker_engine.stop()?;
+
+    // Wait for threads (with timeout)
+    let _ = provider_thread.join();
+    let _ = idle_thread.join();
+    let _ = ipc_thread.join();
+
+    log::info!("track-me engine stopped");
     Ok(())
-}
-
-/// Updates the time spent HashMap with the elapsed time for a window
-fn update_time_spent(time_spent: &TimeSpent, window: &str, elapsed: i32) {
-    let mut map = time_spent.lock().unwrap();
-    map.entry(window.to_string())
-        .and_modify(|v| *v += elapsed)
-        .or_insert(elapsed);
-}
-
-/// Builds the path to Hyprland's event socket
-fn get_hyprland_socket_path() -> std::io::Result<PathBuf> {
-    let instance = env::var("HYPRLAND_INSTANCE_SIGNATURE")
-        .map_err(|_| std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "HYPRLAND_INSTANCE_SIGNATURE not set"
-        ))?;
-
-    let runtime_dir = env::var("XDG_RUNTIME_DIR")
-        .map_err(|_| std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "XDG_RUNTIME_DIR not set"
-        ))?;
-
-    let mut socket_path = PathBuf::from(runtime_dir);
-    socket_path.push(format!("hypr/{}/.socket2.sock", instance));
-
-    Ok(socket_path)
-}
-
-/// Starts a Unix socket server that broadcasts time spent data to clients
-fn start_broadcast_server(time_spent: TimeSpent) -> std::io::Result<()> {
-    // Remove existing socket file if it exists
-    let _ = std::fs::remove_file(BROADCAST_SOCKET);
-
-    let listener = UnixListener::bind(BROADCAST_SOCKET)?;
-    println!("Broadcast server listening on: {}", BROADCAST_SOCKET);
-
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let time_spent_clone = Arc::clone(&time_spent);
-                thread::spawn(move || {
-                    if let Err(e) = handle_client(stream, time_spent_clone) {
-                        eprintln!("Client handler error: {}", e);
-                    }
-                });
-            }
-            Err(e) => eprintln!("Connection failed: {}", e),
-        }
-    }
-
-    Ok(())
-}
-
-/// Handles a client connection and sends the time spent report
-fn handle_client(mut stream: UnixStream, time_spent: TimeSpent) -> std::io::Result<()> {
-    let report = generate_report(&time_spent);
-    stream.write_all(report.as_bytes())?;
-    stream.write_all(b"\n")?;
-    Ok(())
-}
-
-/// Generates a human-readable report of time spent per program
-fn generate_report(time_spent: &TimeSpent) -> String {
-    let map = time_spent.lock().unwrap();
-    
-    let mut report = String::from("=== Time Spent Report ===\n");
-    
-    let mut entries: Vec<_> = map.iter().collect();
-    entries.sort_by(|a, b| b.1.cmp(a.1)); // Sort by time descending
-    
-    for (program, time_ms) in entries {
-        let seconds = time_ms / 1000;
-        let minutes = seconds / 60;
-        let hours = minutes / 60;
-        
-        let time_str = if hours > 0 {
-            format!("{}h {}m {}s", hours, minutes % 60, seconds % 60)
-        } else if minutes > 0 {
-            format!("{}m {}s", minutes, seconds % 60)
-        } else {
-            format!("{}s", seconds)
-        };
-        
-        report.push_str(&format!("{}: {}\n", program, time_str));
-    }
-    
-    report
 }
