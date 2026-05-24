@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Track-me Dashboard</title>
+  <link rel="stylesheet" href="./style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <header class="glass-panel">
+      <div class="logo">
+        <div class="pulse-ring"></div>
+        <h1>track-me</h1>
+      </div>
+      <div class="live-status" id="live-status">
+        <div class="status-text">
+          <p class="status-label">Currently Tracking</p>
+          <h2 id="current-app">Loading...</h2>
+          <p id="current-title" class="sub-text">Connecting to engine...</p>
+        </div>
+        <span class="status-indicator"></span>
+      </div>
+    </header>
+
+    <main>
+      <div class="grid">
+        <div class="card glass-panel chart-container">
+          <h2>Today's Usage Breakdown</h2>
+          <div class="canvas-wrapper">
+             <canvas id="usageChart"></canvas>
+          </div>
+        </div>
+        
+        <div class="card glass-panel stats-container">
+          <h2>Top Applications</h2>
+          <div id="stats-list" class="stats-list">
+             <!-- Populated by JS -->
+          </div>
+          <div class="total-time">
+            <p>Total Active Time</p>
+            <h3 id="total-time">0h 0m</h3>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>
