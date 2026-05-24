@@ -35,3 +35,6 @@ anyhow = "1"
 # CLI
 clap = { version = "4", features = ["derive"] }
 comfy-table = "=7.1.0"
+
+# Compositor IPC
+swayipc = "3"
