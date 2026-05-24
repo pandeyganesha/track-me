@@ -38,3 +38,4 @@ comfy-table = "=7.1.0"
 
 # Compositor IPC
 swayipc = "3"
+x11rb = "0.13"

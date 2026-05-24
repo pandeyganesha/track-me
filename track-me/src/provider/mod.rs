@@ -7,6 +7,7 @@
 
 pub mod hyprland;
 pub mod sway;
+pub mod x11;
 
 use crate::config::Config;
 use crate::event::Event;
@@ -41,13 +42,14 @@ pub trait EventProvider: Send {
 /// Detection order:
 /// 1. `$HYPRLAND_INSTANCE_SIGNATURE` → Hyprland
 /// 2. `$SWAYSOCK` or `$I3SOCK` → Sway/i3
-/// 3. (future) `$DISPLAY` → X11
+/// 3. `$DISPLAY` → X11
 pub fn detect_provider(config: &Config) -> Result<Box<dyn EventProvider>> {
     let provider_name = &config.general.provider;
 
     match provider_name.as_str() {
         "hyprland" => Ok(Box::new(hyprland::HyprlandProvider::new()?)),
         "sway" | "i3" => Ok(Box::new(sway::SwayProvider::new()?)),
+        "x11" => Ok(Box::new(x11::X11Provider::new()?)),
 
         "auto" => {
             // Try providers in order of preference
@@ -61,7 +63,10 @@ pub fn detect_provider(config: &Config) -> Result<Box<dyn EventProvider>> {
                 return Ok(Box::new(sway::SwayProvider::new()?));
             }
 
-            // Future: check $DISPLAY for X11
+            if std::env::var("DISPLAY").is_ok() {
+                log::info!("Auto-detected X11 display server");
+                return Ok(Box::new(x11::X11Provider::new()?));
+            }
 
             bail!(
                 "Could not auto-detect compositor. \
@@ -69,6 +74,6 @@ pub fn detect_provider(config: &Config) -> Result<Box<dyn EventProvider>> {
             );
         }
 
-        other => bail!("Unknown provider '{}'. Supported: hyprland, sway, i3, auto", other),
+        other => bail!("Unknown provider '{}'. Supported: hyprland, sway, i3, x11, auto", other),
     }
 }
