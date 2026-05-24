@@ -13,7 +13,15 @@ use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "track-me-cli")]
-#[command(about = "CLI dashboard for the track-me activity tracker", long_about = None)]
+#[command(version)]
+#[command(about = "CLI dashboard for the track-me activity tracker")]
+#[command(long_about = "
+The track-me-cli tool connects to your locally running track-me background engine
+to fetch and display your computer usage statistics. 
+
+Ensure the engine is running via systemd:
+    systemctl --user status track-me.service
+")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -22,13 +30,28 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Show current status and active window
+    #[command(about = "Check if the engine is running and what it is currently tracking")]
     Status,
+    
     /// Show today's usage statistics
+    #[command(about = "Display a summary of all applications used today")]
     Today,
+    
     /// Show usage statistics for a specific date (YYYY-MM-DD)
-    Date { date: String },
+    #[command(about = "Display usage statistics for a specific date")]
+    Date { 
+        /// Date to query in YYYY-MM-DD format (e.g., 2026-05-24)
+        date: String 
+    },
+    
     /// Show usage statistics for a date range
-    Range { from: String, to: String },
+    #[command(about = "Display usage statistics spanning multiple days")]
+    Range { 
+        /// Start date in YYYY-MM-DD format
+        from: String, 
+        /// End date in YYYY-MM-DD format
+        to: String 
+    },
 }
 
 #[derive(Serialize)]

@@ -24,8 +24,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use clap::Parser;
+
+/// track-me: Background engine daemon
+///
+/// This is the background service that records your system activity.
+/// You do not need to run this manually! It is designed to be managed by systemd.
+///
+/// To view your statistics, run the dashboard tool instead:
+///     track-me-cli --help
+#[derive(Parser)]
+#[command(name = "track-me")]
+#[command(version, about)]
+struct Cli {}
 
 fn main() -> Result<()> {
+    // Parse arguments (only used to display --help and version)
+    let _cli = Cli::parse();
+
     // Initialize logging (respects RUST_LOG env var, defaults to "info")
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info"),

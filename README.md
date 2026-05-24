@@ -1,83 +1,134 @@
 # track-me
 
-A local, privacy-first system activity tracker for Linux. 
+**track-me** is a local, privacy-first system activity tracker for Linux. 
 
-It records your high-level computer activity as immutable, append-only events (window focus changes, idle states) and provides a fast SQLite index for querying your usage statistics over time.
+It silently runs in the background to record your high-level computer activity (such as window focus changes and idle time) as immutable, append-only events. It provides accurate time-tracking statistics without ever sending your data to the cloud.
 
-## Architecture
+---
 
-The engine runs as a background daemon and consists of:
-1. **Event Provider:** Connects to your compositor (currently Hyprland) to listen for window events.
-2. **Idle Detector:** Tracks inactivity and pauses tracking when you step away.
-3. **Tracker:** Maintains the state machine and calculates accurate time spans.
-4. **Storage (Dual Write):** 
-   - **JSONL Event Log (`~/.local/share/track-me/events/`):** The immutable source of truth. Every event is appended here.
-   - **SQLite Index (`~/.local/share/track-me/index.db`):** An index built from the events to allow fast time-range queries.
-5. **IPC Server:** A Unix socket (`$XDG_RUNTIME_DIR/track-me.sock`) that accepts JSON requests and returns JSON responses.
+## 🧠 How It Works
 
-## Installation & Setup
+This project is built using the Unix philosophy: splitting complex tasks into small, focused tools that communicate with each other. It consists of two main components:
 
-1. **Build the binary:**
+### 1. The Core Engine (`track-me`)
+A background daemon that runs continuously. You never interact with this directly.
+* **Event Provider:** Hooks directly into your compositor (currently Hyprland) to listen for window focus events exactly when they happen.
+* **Idle Detector:** Notices if you haven't typed or moved your mouse for a while (configurable) and automatically pauses the timer so your "time spent" remains accurate.
+* **Dual Storage System:**
+  * **JSONL Event Log (`~/.local/share/track-me/events/`):** The immutable source of truth. Every single event is permanently logged here.
+  * **SQLite Index (`~/.local/share/track-me/index.db`):** A fast database built dynamically from the events, enabling lightning-fast time aggregations.
+* **IPC Server:** It opens a Unix Domain Socket at `$XDG_RUNTIME_DIR/track-me.sock` that accepts JSON requests.
+
+### 2. The CLI Dashboard (`track-me-cli`)
+The command-line tool you use to see your data. It connects to the Core Engine's Unix socket, asks for statistics, and prints beautifully formatted tables right in your terminal.
+
+---
+
+## 🛠️ Installation & Setup
+
+1. **Build the Project**
+   Ensure you have Rust installed, then compile the project:
    ```bash
-   cargo build --release
+   git clone <your-repo>
+   cd track-me/track-me
+   cargo install --path .
    ```
+   *This installs two binaries into `~/.cargo/bin`: `track-me` and `track-me-cli`.*
 
-2. **Install the systemd service:**
-   We provide a systemd user service to run the engine automatically in the background.
+2. **Install the Background Service**
+   We provide a Systemd user service so the engine starts automatically when you log in.
    ```bash
    mkdir -p ~/.config/systemd/user/
-   cp ../track-me.service ~/.config/systemd/user/
+   cp track-me.service ~/.config/systemd/user/
    
-   # Reload systemd and enable/start the service
+   # Reload systemd and start the service
    systemctl --user daemon-reload
    systemctl --user enable --now track-me.service
    ```
 
-3. **Check the logs:**
+3. **Check the Engine Logs**
+   To verify the engine is running properly:
    ```bash
    journalctl --user -u track-me -f
    ```
 
-## Configuration
+---
 
-Configuration is optional. The engine will auto-detect your Hyprland session out of the box. 
-If you want to customize it, create `~/.config/track-me/config.toml`:
+## 📊 Usage
+
+To view your statistics, use the `track-me-cli` command. 
+
+**Check Live Status**  
+See what the engine is tracking *right now*, and whether you are currently marked as Active or Idle.
+```bash
+track-me-cli status
+```
+
+**View Today's Summary**  
+See a table of all applications used today and the total time spent on each.
+```bash
+track-me-cli today
+```
+
+**View a Specific Date**  
+```bash
+track-me-cli date 2026-05-24
+```
+
+**View a Date Range**  
+```bash
+track-me-cli range 2026-05-01 2026-05-31
+```
+
+---
+
+## ⚙️ Configuration
+
+Configuration is entirely optional. Out of the box, `track-me` will auto-detect your Hyprland session and start tracking.
+
+To customize behavior, create a config file at `~/.config/track-me/config.toml`:
 
 ```toml
 [general]
-# "auto" (default) or "hyprland"
+# "auto" (default) detects your environment. Explicit: "hyprland"
 provider = "auto"
 
 [idle]
 enabled = true
-timeout_secs = 300 # 5 minutes
+# How many seconds of inactivity before marking you as "Idle"
+timeout_secs = 300 
 
 [storage]
+# Override the default data directory if desired
 # data_dir = "/custom/path/to/data"
 ```
+*Note: If you change the config, restart the engine with `systemctl --user restart track-me.service`.*
 
-## Querying Data (IPC)
+---
 
-The engine exposes a JSON-RPC-like interface over a Unix socket at `$XDG_RUNTIME_DIR/track-me.sock`.
+## 💻 For Developers: Building Custom UIs
 
-You can query it using `socat`.
+Because the Core Engine exposes its data over a local Unix Socket, you are not limited to the CLI! You can build Web Dashboards, Python scripts, or desktop widgets by querying the socket directly.
 
-**Get today's usage:**
+The socket is located at `$XDG_RUNTIME_DIR/track-me.sock`. Send a single line of JSON to it, and it will respond with JSON.
+
+**Example using `socat` in bash:**
 ```bash
 echo '{"command": "today"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/track-me.sock
 ```
 
-**Get current focus state:**
-```bash
-echo '{"command": "current"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/track-me.sock
-```
+**Supported Commands:**
+* `{"command": "status"}` - Returns current engine status.
+* `{"command": "current"}` - Returns details about the currently focused window.
+* `{"command": "today"}` - Returns a dictionary of `{ "app_name": duration_in_milliseconds }`.
+* `{"command": "date", "date": "YYYY-MM-DD"}` - Returns usage for a specific day.
+* `{"command": "range", "from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}` - Returns usage spanning multiple days.
 
-**Get usage for a specific date:**
-```bash
-echo '{"command": "date", "date": "2026-05-24"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/track-me.sock
-```
+---
 
-**Get usage for a date range:**
-```bash
-echo '{"command": "range", "from": "2026-05-01", "to": "2026-05-31"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/track-me.sock
-```
+## 📂 Data Privacy & File Locations
+
+Your data is entirely local.
+* **Logs & Database:** `~/.local/share/track-me/`
+* **Configuration:** `~/.config/track-me/config.toml`
+* **Live Socket:** `$XDG_RUNTIME_DIR/track-me.sock` (usually `/run/user/1000/track-me.sock`)
